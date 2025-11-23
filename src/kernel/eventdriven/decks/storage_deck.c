@@ -318,10 +318,12 @@ int storage_deck_process(RoutingEntry* entry) {
 
     Event* event = &entry->event_copy;
 
-    // DEFENSIVE: Validate event type is in storage range (200-299)
-    if (event->type < 200 || event->type >= 300) {
+    // DEFENSIVE: Validate event type is in storage range
+    // Memory operations: 1-9, File operations: 10-19
+    int valid_type = (event->type >= 1 && event->type < 20);
+    if (!valid_type) {
         deck_error_detailed(entry, DECK_PREFIX_STORAGE, ERROR_INVALID_PARAMETER,
-                          "Event type out of storage range (200-299)");
+                          "Event type out of storage range (1-19)");
         return 0;
     }
 
@@ -625,8 +627,7 @@ int storage_deck_process(RoutingEntry* entry) {
         }
 
         // === TAGFS OPERATIONS ===
-        case 215:  // Storage Deck range: FILE_CREATE_TAGGED (new range 200-299)
-        case EVENT_FILE_CREATE_TAGGED: {  // Legacy support (old range 1-99)
+        case EVENT_FILE_CREATE_TAGGED: {
             // Payload: [tag_count:4][tags:Tag[]...]
             uint32_t tag_count = *(uint32_t*)event->data;
             Tag* tags = (Tag*)(event->data + 4);
