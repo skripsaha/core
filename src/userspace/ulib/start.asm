@@ -7,7 +7,7 @@
 
 BITS 64
 
-section .text
+section .text.entry
 global _start
 extern main
 

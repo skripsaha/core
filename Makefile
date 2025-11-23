@@ -45,8 +45,9 @@ KERNEL_START_SECTOR = 10
 ASMFLAGS       =  -g -f bin
 ASMFLAGS_ELF   = -g -f elf64
 CFLAGS         = -g -m64 -ffreestanding -nostdlib -Wall -Wextra
-INCLUDE_DIRS   := $(shell find src -type d)
-CFLAGS         += $(addprefix -I,$(INCLUDE_DIRS))
+# Kernel include paths (exclude userspace to prevent type conflicts)
+KERNEL_INCLUDE_DIRS := $(shell find src -type d ! -path "src/userspace*")
+CFLAGS         += $(addprefix -I,$(KERNEL_INCLUDE_DIRS))
 LDFLAGS        = -g -T $(ENTRYDIR)/linker.ld -nostdlib -z max-page-size=0x1000 --oformat=binary
 
 # ==== DIRECTORIES ====
@@ -62,7 +63,8 @@ STAGE2_SRC        = $(BOOTDIR)/stage2/stage2.asm
 KERNEL_ENTRY_SRC  = $(ENTRYDIR)/kernel_entry.asm
 
 # ==== DISCOVER FILES ====
-C_SRCS      := $(shell find $(SRCDIR) -name '*.c')
+# Kernel sources only (exclude userspace - it's compiled separately as ELF)
+C_SRCS      := $(shell find $(SRCDIR) -name '*.c' ! -path "$(SRCDIR)/userspace/*")
 ASM_SRCS    := $(shell find $(SRCDIR) -name '*.asm')
 
 # ==== EXCLUSIONS ====
@@ -219,4 +221,51 @@ info:
 	@echo "  debug      — run QEMU with gdb waiting"
 	@echo "  clean      — clean build directory"
 	@echo "  install-deps — install required packages"
+	@echo "  userspace  — build userspace programs (shell)"
+
+# ===================================================================
+# USERSPACE BUILD (separate from kernel)
+# ===================================================================
+
+USERSPACE_DIR    = $(SRCDIR)/userspace
+USERSPACE_BUILD  = $(BUILDDIR)/userspace
+ULIB_DIR         = $(USERSPACE_DIR)/ulib
+
+# Userspace compile flags (only userspace includes, no kernel headers)
+UFLAGS           = -g -m64 -ffreestanding -nostdlib -fno-stack-protector -Wall -Wextra
+UFLAGS          += -I$(ULIB_DIR)
+
+# Userspace linker script
+ULINKER          = $(USERSPACE_DIR)/user.ld
+
+# Shell sources
+SHELL_SRCS       = $(USERSPACE_DIR)/shell/shell.c $(ULIB_DIR)/ulib.c
+SHELL_ASM        = $(ULIB_DIR)/start.asm
+SHELL_ELF        = $(USERSPACE_BUILD)/shell.elf
+
+.PHONY: userspace shell
+
+userspace: $(SHELL_ELF)
+	@echo "Userspace programs built."
+
+# Compile userspace C files
+$(USERSPACE_BUILD)/%.o: $(USERSPACE_DIR)/%.c | $(USERSPACE_BUILD)
+	@echo "Compiling userspace $<..."
+	@mkdir -p $(@D)
+	@$(CC) $(UFLAGS) -c $< -o $@
+
+# Compile userspace start.asm
+$(USERSPACE_BUILD)/start.o: $(SHELL_ASM) | $(USERSPACE_BUILD)
+	@echo "Assembling userspace start..."
+	@mkdir -p $(@D)
+	@$(ASM) $(ASMFLAGS_ELF) $< -o $@
+
+$(USERSPACE_BUILD):
+	@mkdir -p $(USERSPACE_BUILD)/shell $(USERSPACE_BUILD)/ulib
+
+# Build shell ELF
+$(SHELL_ELF): $(USERSPACE_BUILD)/start.o $(USERSPACE_BUILD)/ulib/ulib.o $(USERSPACE_BUILD)/shell/shell.o $(ULINKER)
+	@echo "Linking shell..."
+	@$(LD) -g -nostdlib -T $(ULINKER) -o $@ $(USERSPACE_BUILD)/start.o $(USERSPACE_BUILD)/ulib/ulib.o $(USERSPACE_BUILD)/shell/shell.o
+	@echo "Shell built: $@"
 
