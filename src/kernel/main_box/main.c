@@ -17,6 +17,7 @@
 #include "process.h"
 #include "workflow.h"
 #include "events.h"
+#include "elf_loader.h"
 
 // Linker-provided symbols for BSS section
 extern char __bss_start[];
@@ -191,18 +192,47 @@ void kernel_main(e820_entry_t* e820_map, uint64_t e820_count, uint64_t mem_start
     }
 
     // ========================================================================
-    // PHASE 8: CREATE MULTIPLE USER PROCESSES (MULTI-PROCESS TEST!)
+    // PHASE 8: LAUNCH SHELL (Production Mode)
     // ========================================================================
 
-    kprintf("\n=== Launching Multi-Process Concurrent Test ===\n");
+    kprintf("\n=== Launching BoxOS Shell ===\n");
 
-    // Load embedded user programs
+    // Load shell or test programs based on build configuration
+    // Build with -DUSE_SHELL to enable shell, otherwise test programs
+    #ifdef USE_SHELL
+    #include "shell_binary.h"
+
+    kprintf("[KERNEL] Loading shell (%u bytes ELF)...\n", shell_binary_len);
+
+    // Validate ELF
+    int elf_err = elf_validate(shell_binary, shell_binary_len);
+    if (elf_err != ELF_OK) {
+        kprintf("[KERNEL] ERROR: Shell ELF validation failed: %s\n",
+                elf_error_string(elf_err));
+        panic("Invalid shell ELF!");
+    }
+
+    // Create process from ELF
+    process_t* shell_proc = process_create_elf(shell_binary, shell_binary_len);
+    if (!shell_proc) {
+        panic("Failed to create shell process!");
+    }
+    kprintf("[KERNEL] Shell process created (PID=%lu)\n", shell_proc->pid);
+
+    // Add shell to scheduler
+    extern void scheduler_add_process(process_t* proc);
+    scheduler_add_process(shell_proc);
+
+    kprintf("[KERNEL] Shell added to ready queue\n");
+    kprintf("[KERNEL] Transitioning to Ring 3 (shell mode)...\n\n");
+
+    #else
+    // Fallback: Load test programs (default for development)
+    kprintf("[KERNEL] Loading test programs (build with -DUSE_SHELL for shell)...\n");
+
     #include "user_storage_test_binary.h"
     #include "concurrent_test_binary.h"
 
-    // Create FIRST process (original storage test)
-    kprintf("[KERNEL] Creating Process 1 (Storage test, %u bytes)...\n",
-            user_storage_test_binary_len);
     process_t* proc1 = process_create(user_storage_test_binary,
                                       user_storage_test_binary_len, 0);
     if (!proc1) {
@@ -210,9 +240,6 @@ void kernel_main(e820_entry_t* e820_map, uint64_t e820_count, uint64_t mem_start
     }
     kprintf("[KERNEL] Process 1 created (PID=%lu)\n", proc1->pid);
 
-    // Create SECOND process (concurrent test)
-    kprintf("[KERNEL] Creating Process 2 (Concurrent test, %u bytes)...\n",
-            concurrent_test_binary_len);
     process_t* proc2 = process_create(concurrent_test_binary,
                                       concurrent_test_binary_len, 0);
     if (!proc2) {
@@ -220,27 +247,13 @@ void kernel_main(e820_entry_t* e820_map, uint64_t e820_count, uint64_t mem_start
     }
     kprintf("[KERNEL] Process 2 created (PID=%lu)\n", proc2->pid);
 
-    // Create THIRD process (concurrent test)
-    kprintf("[KERNEL] Creating Process 3 (Concurrent test, %u bytes)...\n",
-            concurrent_test_binary_len);
-    process_t* proc3 = process_create(concurrent_test_binary,
-                                      concurrent_test_binary_len, 0);
-    if (!proc3) {
-        panic("Failed to create process 3!");
-    }
-    kprintf("[KERNEL] Process 3 created (PID=%lu)\n", proc3->pid);
-
-    kprintf("\n[KERNEL] All 3 processes created successfully!\n");
-    kprintf("[KERNEL] Starting multi-process concurrent execution...\n\n");
-
-    // Add all processes to scheduler ready queue
     extern void scheduler_add_process(process_t* proc);
     scheduler_add_process(proc1);
     scheduler_add_process(proc2);
-    scheduler_add_process(proc3);
 
-    kprintf("[KERNEL] All %d processes added to ready queue\n", 3);
-    kprintf("[KERNEL] Transitioning to Ring 3 (multi-process mode)...\n\n");
+    kprintf("[KERNEL] Test processes added to ready queue\n");
+    kprintf("[KERNEL] Transitioning to Ring 3...\n\n");
+    #endif
 
     // CRITICAL: Enable interrupts NOW (processes are created and ready!)
     // Scheduler will automatically pick first process from ready queue on first timer tick
