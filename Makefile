@@ -277,9 +277,9 @@ shell-header: $(SHELL_ELF)
 	@echo "Generating shell_binary.h..."
 	@echo "// Auto-generated from shell.elf - DO NOT EDIT" > $(SHELL_HEADER)
 	@echo "const unsigned char shell_binary[] = {" >> $(SHELL_HEADER)
-	@xxd -i < $(SHELL_ELF) | tail -n +2 | head -n -1 >> $(SHELL_HEADER)
+	@xxd -i < $(SHELL_ELF) | sed '1d;$$d' >> $(SHELL_HEADER)
 	@echo "};" >> $(SHELL_HEADER)
-	@echo "const unsigned int shell_binary_len = $$(wc -c < $(SHELL_ELF));" >> $(SHELL_HEADER)
+	@echo "const unsigned int shell_binary_len = $$(stat -f%z $(SHELL_ELF) 2>/dev/null || stat -c%s $(SHELL_ELF));" >> $(SHELL_HEADER)
 	@echo "Shell header generated: $(SHELL_HEADER)"
 
 # Build kernel with shell enabled
