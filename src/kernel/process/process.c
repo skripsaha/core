@@ -5,6 +5,7 @@
 #include "vmm.h"
 #include "gdt.h"
 #include "atomics.h"
+#include "elf_loader.h"
 
 // ============================================================================
 // GLOBAL STATE
@@ -233,6 +234,170 @@ process_t* process_create(void* code, uint64_t code_size, uint64_t entry_offset)
     kprintf("[PROCESS]     EventRing: kernel=0x%p\n", proc->event_ring);
     kprintf("[PROCESS]     ResultRing: kernel=0x%p\n", proc->result_ring);
     kprintf("[PROCESS]   CS: 0x%04x, SS: 0x%04x\n", proc->cs, proc->ss);
+
+    return proc;
+}
+
+// ============================================================================
+// PROCESS CREATION FROM ELF
+// ============================================================================
+
+process_t* process_create_elf(const void* elf_data, uint64_t elf_size) {
+    if (!elf_data || elf_size == 0) {
+        kprintf("[PROCESS] ERROR: Invalid ELF data\n");
+        return 0;
+    }
+
+    // Validate ELF
+    int err = elf_validate(elf_data, elf_size);
+    if (err != ELF_OK) {
+        kprintf("[PROCESS] ERROR: ELF validation failed: %s\n", elf_error_string(err));
+        return 0;
+    }
+
+    // Get ELF info
+    ElfLoadInfo info;
+    err = elf_get_info(elf_data, elf_size, &info);
+    if (err != ELF_OK) {
+        kprintf("[PROCESS] ERROR: Failed to get ELF info: %s\n", elf_error_string(err));
+        return 0;
+    }
+
+    kprintf("[ELF] Loading ELF: entry=0x%lx, base=0x%lx, size=%lu, segments=%u\n",
+            info.entry_point, info.base_addr, info.total_size, info.segment_count);
+
+    // Find free process slot
+    process_t* proc = 0;
+    for (int i = 0; i < PROCESS_MAX_COUNT; i++) {
+        if (process_table[i].pid == 0) {
+            proc = &process_table[i];
+            break;
+        }
+    }
+
+    if (!proc) {
+        kprintf("[PROCESS] ERROR: Process table full!\n");
+        return 0;
+    }
+
+    // Initialize process
+    proc->pid = next_pid++;
+    proc->state = PROCESS_STATE_READY;
+
+    // Create VMM context for process
+    vmm_context_t* ctx = vmm_create_context();
+    if (!ctx) {
+        kprintf("[PROCESS] ERROR: Failed to create VMM context!\n");
+        proc->pid = 0;
+        return 0;
+    }
+
+    // Load ELF into process address space
+    uint64_t entry = elf_load_process(elf_data, elf_size, ctx, &info);
+    if (!entry) {
+        kprintf("[PROCESS] ERROR: Failed to load ELF!\n");
+        vmm_destroy_context(ctx);
+        proc->pid = 0;
+        return 0;
+    }
+
+    // Allocate user stack (16KB)
+    uint64_t stack_pages = USER_STACK_SIZE / PMM_PAGE_SIZE;
+    uint64_t stack_phys = (uint64_t)pmm_alloc(stack_pages);
+
+    if (!stack_phys) {
+        kprintf("[PROCESS] ERROR: Failed to allocate user stack!\n");
+        vmm_destroy_context(ctx);
+        proc->pid = 0;
+        return 0;
+    }
+
+    // Map stack into process address space
+    uint64_t user_stack_virt = 0x7FFFFFFF0000ULL;  // High address, below canonical hole
+    vmm_map_result_t map_result = vmm_map_pages(ctx, user_stack_virt, stack_phys, stack_pages,
+                                                VMM_FLAGS_USER_RW);
+    if (!map_result.success) {
+        kprintf("[PROCESS] ERROR: Failed to map stack!\n");
+        pmm_free((void*)stack_phys, stack_pages);
+        vmm_destroy_context(ctx);
+        proc->pid = 0;
+        return 0;
+    }
+
+    // Allocate and map ring buffers (same as in process_create)
+    size_t event_ring_size = sizeof(EventRing);
+    size_t result_ring_size = sizeof(ResultRing);
+    size_t rings_total = event_ring_size + result_ring_size;
+    uint64_t rings_pages = (rings_total + PMM_PAGE_SIZE - 1) / PMM_PAGE_SIZE;
+    uint64_t rings_phys = (uint64_t)pmm_alloc(rings_pages);
+
+    if (!rings_phys) {
+        kprintf("[PROCESS] ERROR: Failed to allocate ring buffers!\n");
+        pmm_free((void*)stack_phys, stack_pages);
+        vmm_destroy_context(ctx);
+        proc->pid = 0;
+        return 0;
+    }
+
+    // Clear ring buffers
+    memset((void*)rings_phys, 0, rings_pages * PMM_PAGE_SIZE);
+
+    // Get kernel virtual addresses for rings
+    EventRing* event_ring = (EventRing*)rings_phys;
+    ResultRing* result_ring = (ResultRing*)(rings_phys + event_ring_size);
+
+    // Map rings to user space
+    uint64_t user_rings_virt = 0x20200000;
+    map_result = vmm_map_pages(ctx, user_rings_virt, rings_phys, rings_pages,
+                               VMM_FLAGS_USER_RW);
+    if (!map_result.success) {
+        kprintf("[PROCESS] ERROR: Failed to map ring buffers!\n");
+        pmm_free((void*)rings_phys, rings_pages);
+        pmm_free((void*)stack_phys, stack_pages);
+        vmm_destroy_context(ctx);
+        proc->pid = 0;
+        return 0;
+    }
+
+    // Store addresses
+    proc->code_base = info.base_addr;
+    proc->code_phys = 0;  // ELF loader handles this
+    proc->code_size = info.total_size;
+    proc->stack_base = user_stack_virt;
+    proc->stack_phys = stack_phys;
+    proc->rsp = user_stack_virt + USER_STACK_SIZE - 16;
+    proc->rbp = proc->rsp;
+
+    // Ring buffers
+    proc->event_ring = event_ring;
+    proc->result_ring = result_ring;
+    proc->rings_phys = rings_phys;
+    proc->rings_user_vaddr = user_rings_virt;
+    proc->rings_pages = rings_pages;
+
+    // Entry point from ELF
+    proc->rip = entry;
+
+    // User mode segments
+    proc->cs = GDT_USER_CODE;
+    proc->ss = GDT_USER_DATA;
+    proc->ds = GDT_USER_DATA;
+    proc->rflags = 0x202;
+
+    // VMM context
+    proc->vmm_context = ctx;
+    proc->cr3 = ctx->pml4_phys;
+
+    // Statistics
+    proc->syscall_count = 0;
+    proc->current_workflow_id = 0;
+    proc->creation_time = rdtsc();
+    proc->last_syscall_tick = 0;
+
+    kprintf("[PROCESS] Created ELF process PID=%lu\n", proc->pid);
+    kprintf("[PROCESS]   Entry: 0x%lx\n", proc->rip);
+    kprintf("[PROCESS]   Code: 0x%lx - 0x%lx\n", info.base_addr, info.end_addr);
+    kprintf("[PROCESS]   Stack: 0x%lx\n", proc->stack_base);
 
     return proc;
 }

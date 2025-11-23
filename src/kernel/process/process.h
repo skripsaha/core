@@ -76,8 +76,11 @@ typedef struct {
 void process_init(void);
 
 // === PROCESS CREATION ===
-// Create a new user process from code buffer
+// Create a new user process from raw code buffer
 process_t* process_create(void* code, uint64_t code_size, uint64_t entry_offset);
+
+// Create a new user process from ELF binary
+process_t* process_create_elf(const void* elf_data, uint64_t elf_size);
 
 // === EXECUTION ===
 // Enter user mode and start executing process
