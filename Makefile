@@ -222,6 +222,7 @@ info:
 	@echo "  clean      — clean build directory"
 	@echo "  install-deps — install required packages"
 	@echo "  userspace  — build userspace programs (shell)"
+	@echo "  shell-mode — build kernel with shell (requires userspace first)"
 
 # ===================================================================
 # USERSPACE BUILD (separate from kernel)
@@ -268,4 +269,22 @@ $(SHELL_ELF): $(USERSPACE_BUILD)/start.o $(USERSPACE_BUILD)/ulib/ulib.o $(USERSP
 	@echo "Linking shell..."
 	@$(LD) -g -nostdlib -T $(ULINKER) -o $@ $(USERSPACE_BUILD)/start.o $(USERSPACE_BUILD)/ulib/ulib.o $(USERSPACE_BUILD)/shell/shell.o
 	@echo "Shell built: $@"
+
+# Generate shell_binary.h for embedding in kernel
+SHELL_HEADER = $(KERNELDIR)/process/shell_binary.h
+
+shell-header: $(SHELL_ELF)
+	@echo "Generating shell_binary.h..."
+	@echo "// Auto-generated from shell.elf - DO NOT EDIT" > $(SHELL_HEADER)
+	@echo "const unsigned char shell_binary[] = {" >> $(SHELL_HEADER)
+	@xxd -i < $(SHELL_ELF) | tail -n +2 | head -n -1 >> $(SHELL_HEADER)
+	@echo "};" >> $(SHELL_HEADER)
+	@echo "const unsigned int shell_binary_len = $$(wc -c < $(SHELL_ELF));" >> $(SHELL_HEADER)
+	@echo "Shell header generated: $(SHELL_HEADER)"
+
+# Build kernel with shell enabled
+.PHONY: shell-mode
+shell-mode: userspace shell-header
+	@echo "Building kernel with shell enabled..."
+	$(MAKE) CFLAGS="$(CFLAGS) -DUSE_SHELL"
 
