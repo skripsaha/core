@@ -65,7 +65,7 @@ KERNEL_ENTRY_SRC  = $(ENTRYDIR)/kernel_entry.asm
 # ==== DISCOVER FILES ====
 # Kernel sources only (exclude userspace - it's compiled separately as ELF)
 C_SRCS      := $(shell find $(SRCDIR) -name '*.c' ! -path "$(SRCDIR)/userspace/*")
-ASM_SRCS    := $(shell find $(SRCDIR) -name '*.asm')
+ASM_SRCS    := $(shell find $(SRCDIR) -name '*.asm' ! -path "$(SRCDIR)/userspace/*")
 
 # ==== EXCLUSIONS ====
 BOOT_ASM_SRCS     := $(STAGE1_SRC) $(STAGE2_SRC)
