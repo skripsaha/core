@@ -2,7 +2,7 @@
 #include "io.h"
 #include "klib.h"
 
-unsigned char *vga = (unsigned char*)VGA;
+unsigned char *vga = (unsigned char*)VGA_MEMORY;
 
 uint8_t vga_attr_backup[VGA_WIDTH * VGA_HEIGHT]; // Хранит цвет каждого символа
 
@@ -46,21 +46,25 @@ void vga_print(const char *str){
             str++;
             continue;
         }
-        vga_print_char(*str, TEXT_ATTR_DEFAULT);
+        vga_print_char(*str, VGA_DEFAULT);
         str++;
     }
-    vga_update_cursor();    
+    vga_update_cursor();
 }
 
-// void vga_print_newline(void){
-//     current_line = current_loc / line_size;
-//     if (current_line + 1 >= VGA_HEIGHT) {
-//         vga_scroll_up();
-//         current_loc = (VGA_HEIGHT - 1) * line_size;
-//     } else {
-//         current_loc = (current_line + 1) * line_size;
-//     }
-// }
+// Print string with custom attribute
+void vga_print_attr(const char *str, uint8_t attr){
+    while(*str){
+        if(*str == '\n'){
+            vga_print_newline();
+            str++;
+            continue;
+        }
+        vga_print_char(*str, attr);
+        str++;
+    }
+    vga_update_cursor();
+}
 
 void vga_print_newline(void){
     int y = vga_get_cursor_position_y();
@@ -75,11 +79,14 @@ void vga_print_newline(void){
 
 
 void vga_clear_screen(void){
-    for(int i= 0; i < VGA_SIZE; i += 2){
+    for(int i = 0; i < VGA_SIZE; i += 2){
         vga[i] = ' ';
-        vga[i+1] = TEXT_ATTR_DEFAULT;
+        vga[i+1] = VGA_DEFAULT;
+        vga_attr_backup[i / 2] = VGA_DEFAULT;
     }
     current_loc = 0;
+    last_loc = 0;
+    vga_update_cursor();
 }
 
 void vga_clear_line(int line) {
@@ -87,7 +94,7 @@ void vga_clear_line(int line) {
     unsigned int line_start = line * line_size;
     for(unsigned int i = line_start; i < line_start + line_size; i += 2) {
         vga[i] = ' ';
-        vga[i+1] = TEXT_ATTR_DEFAULT;
+        vga[i+1] = VGA_DEFAULT;
     }
 }
 
@@ -105,7 +112,7 @@ void vga_clear_to_eol(void) {
 
     for (; idx < end; idx += 2) {
         vga[idx] = ' ';
-        vga[idx + 1] = TEXT_ATTR_DEFAULT;
+        vga[idx + 1] = VGA_DEFAULT;
     }
 }
 
@@ -120,7 +127,7 @@ void vga_print_error(const char *str){
             str++;
             continue;
         }
-        vga_print_char(*str, TEXT_ATTR_ERROR);
+        vga_print_char(*str, VGA_ERROR);
         str++;
     }
     vga_update_cursor(); 
@@ -132,7 +139,7 @@ void vga_print_success(const char *str){
             str++;
             continue;
         }
-        vga_print_char(*str, TEXT_ATTR_SUCCESS);
+        vga_print_char(*str, VGA_SUCCESS);
         str++;
     }
     vga_update_cursor(); 
@@ -145,32 +152,24 @@ void vga_print_hint(const char *str){
             str++;
             continue;
         }
-        vga_print_char(*str, TEXT_ATTR_HINT);
+        vga_print_char(*str, VGA_HINT);
         str++;
     }
-    vga_update_cursor(); 
+    vga_update_cursor();
 }
 
-// void vga_scroll_up(void){
-//     for (unsigned int i = 0; i < VGA_SIZE - line_size; i += 2) {
-//         vga[i] = vga[i + line_size];
-//         vga[i + 1] = vga[i + line_size + 1];
-
-//         // Обновляем бэкап
-//         uint16_t to = i / 2;
-//         uint16_t from = (i + line_size) / 2;
-//         vga_attr_backup[to] = vga_attr_backup[from];
-//     }
-//     for (unsigned int i = VGA_SIZE - line_size; i < VGA_SIZE; i += 2) {
-//         vga[i] = ' ';
-//         vga[i + 1] = TEXT_ATTR_DEFAULT;
-//     }
-//     if (current_loc >= line_size) {
-//         current_loc -= line_size;
-//     } else {
-//         current_loc = 0;
-//     }
-// }
+void vga_print_warning(const char *str){
+    while(*str){
+        if(*str == '\n'){
+            vga_print_newline();
+            str++;
+            continue;
+        }
+        vga_print_char(*str, VGA_WARNING);
+        str++;
+    }
+    vga_update_cursor();
+}
 
 void vga_scroll_up(void){
     for (unsigned int i = 0; i < VGA_SIZE - line_size; i += 2) {
@@ -184,10 +183,10 @@ void vga_scroll_up(void){
     }
     for (unsigned int i = VGA_SIZE - line_size; i < VGA_SIZE; i += 2) {
         vga[i] = ' ';
-        vga[i + 1] = TEXT_ATTR_DEFAULT;
+        vga[i + 1] = VGA_DEFAULT;
         
         // Обновляем бэкап для очищенных строк
-        vga_attr_backup[i / 2] = TEXT_ATTR_DEFAULT; // Возможно удалить эту строку
+        vga_attr_backup[i / 2] = VGA_DEFAULT; // Возможно удалить эту строку
     }
     if (current_loc >= line_size) {
         current_loc -= line_size;
@@ -196,15 +195,16 @@ void vga_scroll_up(void){
     }
 }
 
-void vga_get_current_attr(){
-    kprintf("Pos: %i\n", current_loc);
+// Get/Set current location (for shell line editing)
+unsigned int vga_get_current_loc(void) {
+    return current_loc;
+}
 
-    unsigned char current_attr = vga[current_loc + 1];
-    kprintf("Attr: %u\n", current_attr);
-    //Сделать чтобы нормально получался атрибут
-    // --к примеру--:
-    //Сейчас: 7, надо чтобы было в переменной current_attr 0x07
-
+void vga_set_current_loc(unsigned int loc) {
+    if (loc < VGA_SIZE) {
+        current_loc = loc;
+        vga_update_cursor();
+    }
 }
 
 void vga_change_background(unsigned char new_bg_color) {
@@ -223,41 +223,23 @@ void vga_change_background(unsigned char new_bg_color) {
     }
 }
 
-// void vga_update_cursor(void){
-//     if (last_loc < VGA_SIZE) {
-//         vga[last_loc + 1] = TEXT_ATTR_DEFAULT;
-//     }
-//     if (current_loc < VGA_SIZE) {
-//         vga[current_loc + 1] = TEXT_ATTR_CURSOR;
-//     }
-//     last_loc = current_loc;
-// }
-
-// Функция обновления курсора с настоящим курсором
+// Hardware cursor update
 void vga_update_cursor(void){
-    // Убираем виртуальный подсвеченный курсор
+    // Restore previous position's attribute from backup
     if (last_loc < VGA_SIZE) {
         uint16_t last_pos = last_loc / 2;
         vga[last_loc + 1] = vga_attr_backup[last_pos];
     }
 
-
-    // (Отключаем виртуальный закрас — теперь аппаратный курсор работает сам)
-    // if (current_loc < VGA_SIZE) {
-    //     vga[current_loc + 1] = TEXT_ATTR_CURSOR;
-    // }
-
     last_loc = current_loc;
 
-    // Аппаратный курсор: положение в символах (а не байтах)
+    // Update hardware cursor position
     uint16_t pos = current_loc / 2;
-
     outb(0x3D4, 0x0F);
     outb(0x3D5, (uint8_t)(pos & 0xFF));
     outb(0x3D4, 0x0E);
     outb(0x3D5, (uint8_t)((pos >> 8) & 0xFF));
 }
-
 
 void vga_set_cursor_position(int x, int y){
     if (x < 0) x = 0;
@@ -266,7 +248,6 @@ void vga_set_cursor_position(int x, int y){
     if (y >= VGA_HEIGHT) y = VGA_HEIGHT - 1;
 
     current_loc = y * line_size + x * BYTES_FOR_EACH_ELEMENT;
-    //current_loc = y * VGA_WIDTH + x;
     vga_update_cursor();
 }
 

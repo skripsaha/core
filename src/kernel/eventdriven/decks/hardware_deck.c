@@ -1,8 +1,10 @@
 #include "deck_interface.h"
 #include "klib.h"
+#include "vga.h"
+#include "keyboard.h"
 
 // ============================================================================
-// HARDWARE DECK - Timer & Device Operations
+// HARDWARE DECK - Timer, Device & Console Operations
 // ============================================================================
 
 // Timer descriptor
@@ -147,10 +149,13 @@ int hardware_deck_process(RoutingEntry* entry) {
 
     Event* event = &entry->event_copy;
 
-    // DEFENSIVE: Validate event type is in hardware range (300-399)
-    if (event->type < 300 || event->type >= 400) {
+    // DEFENSIVE: Validate event type is in hardware range
+    // Timer operations: 50-59, Device operations: 40-49
+    // Console operations: 70-79 (NEW for shell support)
+    int valid_type = (event->type >= 40 && event->type < 80);
+    if (!valid_type) {
         deck_error_detailed(entry, DECK_PREFIX_HARDWARE, ERROR_INVALID_PARAMETER,
-                          "Event type out of hardware range (300-399)");
+                          "Event type out of hardware range (40-79)");
         return 0;
     }
 
@@ -370,6 +375,143 @@ int hardware_deck_process(RoutingEntry* entry) {
             device_write(device_id, data, size);
             deck_complete(entry, DECK_PREFIX_HARDWARE, 0, RESULT_TYPE_NONE);
             kprintf("[HARDWARE] Event %lu: device write\n", event->id);
+            return 1;
+        }
+
+        // ====================================================================
+        // CONSOLE OPERATIONS (for shell)
+        // ====================================================================
+
+        case EVENT_CONSOLE_WRITE: {
+            // Payload: [size:4][string:...]
+            uint32_t size = *(uint32_t*)event->data;
+            const char* str = (const char*)(event->data + 4);
+
+            if (size == 0 || size > EVENT_DATA_SIZE - 4) {
+                deck_error_detailed(entry, DECK_PREFIX_HARDWARE, ERROR_INVALID_PARAMETER,
+                                  "Console write: invalid size");
+                return 0;
+            }
+
+            // Print string with default attribute
+            for (uint32_t i = 0; i < size && str[i]; i++) {
+                if (str[i] == '\n') {
+                    vga_print_newline();
+                } else {
+                    vga_print_char(str[i], VGA_DEFAULT);
+                }
+            }
+            vga_update_cursor();
+
+            deck_complete(entry, DECK_PREFIX_HARDWARE, (void*)(uint64_t)size, RESULT_TYPE_VALUE);
+            return 1;
+        }
+
+        case EVENT_CONSOLE_WRITE_ATTR: {
+            // Payload: [attr:1][size:4][string:...]
+            uint8_t attr = *(uint8_t*)event->data;
+            uint32_t size = *(uint32_t*)(event->data + 1);
+            const char* str = (const char*)(event->data + 5);
+
+            if (size == 0 || size > EVENT_DATA_SIZE - 5) {
+                deck_error_detailed(entry, DECK_PREFIX_HARDWARE, ERROR_INVALID_PARAMETER,
+                                  "Console write attr: invalid size");
+                return 0;
+            }
+
+            // Print string with custom attribute
+            for (uint32_t i = 0; i < size && str[i]; i++) {
+                if (str[i] == '\n') {
+                    vga_print_newline();
+                } else {
+                    vga_print_char(str[i], attr);
+                }
+            }
+            vga_update_cursor();
+
+            deck_complete(entry, DECK_PREFIX_HARDWARE, (void*)(uint64_t)size, RESULT_TYPE_VALUE);
+            return 1;
+        }
+
+        case EVENT_CONSOLE_READ_LINE: {
+            // Payload: [max_size:4]
+            uint32_t max_size = *(uint32_t*)event->data;
+
+            if (max_size == 0 || max_size > 256) {
+                max_size = 256;  // Default/max line size
+            }
+
+            // Allocate buffer for line
+            char* line = (char*)kmalloc(max_size);
+            if (!line) {
+                deck_error_detailed(entry, DECK_PREFIX_HARDWARE, ERROR_OUT_OF_MEMORY,
+                                  "Console read line: failed to allocate buffer");
+                return 0;
+            }
+
+            // Read characters until Enter or max_size
+            uint32_t pos = 0;
+            while (pos < max_size - 1) {
+                char c = keyboard_getchar_blocking();
+
+                if (c == '\n' || c == '\r') {
+                    vga_print_newline();
+                    break;
+                } else if (c == '\b') {
+                    // Backspace
+                    if (pos > 0) {
+                        pos--;
+                        // Move cursor back and clear character
+                        unsigned int loc = vga_get_current_loc();
+                        if (loc >= 2) {
+                            vga_set_current_loc(loc - 2);
+                            vga_print_char(' ', VGA_DEFAULT);
+                            vga_set_current_loc(loc - 2);
+                        }
+                    }
+                } else if (c >= 0x20 && c <= 0x7E) {
+                    // Printable character
+                    line[pos++] = c;
+                    vga_print_char(c, VGA_INPUT);
+                }
+            }
+            line[pos] = '\0';
+
+            deck_complete(entry, DECK_PREFIX_HARDWARE, line, RESULT_TYPE_KMALLOC);
+            return 1;
+        }
+
+        case EVENT_CONSOLE_READ_CHAR: {
+            // Non-blocking single char read
+            char c = keyboard_getchar();  // Returns 0 if no input
+
+            deck_complete(entry, DECK_PREFIX_HARDWARE, (void*)(uint64_t)c, RESULT_TYPE_VALUE);
+            return 1;
+        }
+
+        case EVENT_CONSOLE_CLEAR: {
+            vga_clear_screen();
+            deck_complete(entry, DECK_PREFIX_HARDWARE, 0, RESULT_TYPE_NONE);
+            return 1;
+        }
+
+        case EVENT_CONSOLE_SET_POS: {
+            // Payload: [x:4][y:4]
+            int x = *(int*)event->data;
+            int y = *(int*)(event->data + 4);
+
+            vga_set_cursor_position(x, y);
+            deck_complete(entry, DECK_PREFIX_HARDWARE, 0, RESULT_TYPE_NONE);
+            return 1;
+        }
+
+        case EVENT_CONSOLE_GET_POS: {
+            // Return packed position: (y << 16) | x
+            int x = vga_get_cursor_position_x();
+            int y = vga_get_cursor_position_y();
+            uint64_t pos = ((uint64_t)y << 16) | (uint64_t)x;
+
+            deck_complete(entry, DECK_PREFIX_HARDWARE, (void*)pos, RESULT_TYPE_VALUE);
             return 1;
         }
 

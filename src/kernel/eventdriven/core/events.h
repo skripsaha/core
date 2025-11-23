@@ -62,6 +62,15 @@ typedef enum {
     EVENT_IPC_SHM_ATTACH = 63,
     EVENT_IPC_PIPE_CREATE = 64,
 
+    // Console operations (for shell) - Hardware Deck handles these
+    EVENT_CONSOLE_WRITE = 70,       // Write string to screen
+    EVENT_CONSOLE_WRITE_ATTR = 71,  // Write string with color attribute
+    EVENT_CONSOLE_READ_LINE = 72,   // Read line from keyboard (blocking)
+    EVENT_CONSOLE_READ_CHAR = 73,   // Read single char (non-blocking)
+    EVENT_CONSOLE_CLEAR = 74,       // Clear screen
+    EVENT_CONSOLE_SET_POS = 75,     // Set cursor position
+    EVENT_CONSOLE_GET_POS = 76,     // Get cursor position
+
     EVENT_MAX = 255
 } EventType;
 
